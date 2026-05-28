@@ -1,0 +1,79 @@
+系统整体架构与生产级重构指令
+请对 mcp_client.py、admin_controller.py、tool_registry.py 以及入口程序（ main 文件）进行一次彻底的生产级重构。本次重构必须遵循“彻底无状态化”、“接口隔离”和“控制面收口”的微服务原则。禁止使用打补丁的方式，请严格落实以下 5 大模块的改造要求：
+
+1. 拆分主程序，统一配置化启动入口
+- 废弃原有的 main.py 单一文件。 拆分为 demo_main.py（演示用）和 server_main.py（生产守护进程用）。
+- 控制面统一冷启动逻辑：在 AdminController 中新增方法 init_from_config(config_dict)。无论演示还是生产，启动时都必须传入形如 {"Weather_Server": {"url": "..."}, ...} 的配置字典。
+ - 该方法负责：遍历配置，向 mcp_client 注册 Server 连接，并拉取 tools/list 同步到 ToolRegistry。
+- demo_main.py 要求：启动时动态生成一个 mock 的 config 字典传入 AdminController.init_from_config。执行 Graph 流转时，严禁使用 pass 忽略输出，必须清晰打印出 Agent 生成的文本和工具调用过程。
+- server_main.py 要求：读取本地真实的 mcp_servers_config.json。绝对禁止清空 DB 和 Qdrant。 启动完成后，保留后台运行以响应 HTTP 或控制台交互。
+
+2. tool_registry.py：全面拥抱 Vector DB，实现彻底的无状态化
+- 删除内存状态：彻底删除 self._tools 这个内存字典。解决系统重启后数据无法读取的冷启动 Bug。
+- Payload 全量存储：修改 _upsert_embedding 和 register_batch。在使用 Qdrant 写入 Vector 时，必须将该工具的完整定义（包括序列化后的 schema、search_document 和 mcp_server_name）全部存入 Qdrant 的 payload 字段。
+- 重写查询逻辑：
+ - search 检索到 Top-K 时，直接通过解析返回点的 payload 动态反序列化构造 ToolDefinition 对象返回。
+ - 对于 get_tool、get_server_for_tool、get_all_tools_for_server 和 unregister 等方法，必须使用 Qdrant 提供的 FieldCondition 或 MatchValue 进行精确匹配查询，直接与 DB 交互。
+
+3. admin_controller.py：闭环工具生命周期 (CRUD)
+- 修复 refresh_mcp_server 的数据缺失：
+ - 现有代码只处理了 new_tool_names（新增），直接忽略了已有工具的修改。这是错误的。
+ - 必须处理 Update（更新）：将拉取到的最新工具集封装成 ToolDefinition 后，统统交给 ToolRegistry.register_batch 进行 Upsert，因为远端的 Schema 或 Description 可能已经改变。
+ - 必须处理 Delete（删除）：比对出“本地 Qdrant 存在但远端拉取不到”的死工具（可利用无状态化后的 get_all_tools_for_server 获取），遍历调用 unregister 清理，防止废弃 API 被错误调用。
+
+4. mcp_client.py：严格遵守多态与接口隔离
+- AdminController 当前调用了 self._mcp_client.register_server，但基类中没有此方法，未来替换真实 HTTP Client 时会报错。
+- 必须在 MCPClientAdapter 抽象基类中增加 @abstractmethod def register_server(self, server_name: str, connection_config: Dict[str, Any]): pass。
+
+5. LangGraph mcp_executor 节点的生产级容错（在 graph 层处理）
+- 在执行工具调用的 Graph Node 中，不能让异常直接抛出导致程序崩溃。
+- 必须使用 try-except 包裹 mcp_client.execute_tool 的调用过程。
+- 当遇到工具参数不匹配（大模型幻觉）或超时报错时，捕获异常，并构造格式为 ToolMessage(content=f"执行失败，请重新检查参数: {str(e)}", ...) 的消息追加到 state。以此利用 LLM 的自纠错（Self-Correction）能力发起多轮重试。
+
+6. 你需要完全明确这份需求，才开始写代码。如果有任何疑问，你需要先向我提问，所有都疑问解答后，才开始写代码。
+
+
+
+query: server_main.py启动后保持运行，用户通过什么方式发送对话？
+ANS:
+必须通过对外暴露 Chat HTTP API（如 `POST /api/chat`）的方式进行交互，因为生产环境的服务是无终端的后台进程。
+架构要求：为了保持端口和工程结构的整洁，请**不要**启动第二个 Web 服务器。请将这个数据面的 Chat 路由（Router/Endpoint）集成到现有的、运行 `AdminController` 的那个 FastAPI 服务实例中。
+最终效果是：同一个 FastAPI 服务进程，既监听管理控制台的指令（如 `/admin/mcp/refresh`），也处理用户的对话请求（如 `/api/chat`），并通过调用底层的 LangGraph 实例流式或阻塞式返回结果。主线程只需阻塞保持 Web 服务运行即可。
+
+
+query:server_main.py文件读取的配置文件格式
+ANS:
+不能仅使用扁平的键值对。为了兼容官方 MCP 标准并满足真实的生产扩展需求（如鉴权、多协议支持），配置文件的格式必须设计如下：
+ ```json
+ {
+   "mcpServers": {
+     "Weather_Server": {
+       "transport": "mock",
+       "url": "mock_weather_api",
+       "env": {}
+     },
+     "Calendar_Server": {
+       "transport": "http",
+       "url": "http://api.company.com/calendar/mcp",
+       "headers": {
+         "Authorization": "Bearer {API_TOKEN}"
+       }
+     }
+   }
+ }
+ ```
+ **解析代码要求**：
+ 1. 读取时，必须从顶层的 `"mcpServers"` 字段向下解析。
+ 2. 必须预留并读取 `transport` 字段（当前可默认按 mock 处理，但结构需保留，以便未来对接真实 HTTP/SSE 协议时做分支判断）。
+ 3. 支持读取 `env` 或 `headers` 等扩展字段并透传进 `connection_config` 中。这样做能彻底避免未来接入真实带鉴权的微服务时再次重构解析代码。
+
+
+
+query:server_main.py生产模式下也适用MockMCPServerHub还是需要新增一个真实HTTPClient实现？
+ANS:
+不能简单地二选一，必须采用工厂模式（Factory Pattern）结合策略路由来实现真正的生产级解耦：
+1. 保留并新增：在 `mcp_client.py` 中保留 `MockMCPServerHub`，同时新增一个 `HttpMCPClient` 类（使用 `httpx` 或 `aiohttp` 实现真实的网络 RPC 调用），两者都必须继承自 `MCPClientAdapter` 基类。
+2. 实现动态工厂：实现一个 `MCPClientFactory` 或在 `AdminController` 中加入协议路由逻辑。当读取 `mcp_servers_config.json` 时：
+    - 如果某个 Server 的 `"transport" == "mock"`，则将该 Server 的 `fetch_tools_list` 和 `execute_tool` 请求路由给 `MockMCPServerHub`。
+    - 如果 `"transport" == "http"`，则将请求路由给 `HttpMCPClient` 发起真实网络请求。
+3. 目的：这样做既保证了 `server_main.py` 具备了真正的工业级 HTTP 通讯能力，又允许我们在尚未开发完真实后端接口时，利用 `transport: "mock"` 让服务在本地成功启动并测试。"

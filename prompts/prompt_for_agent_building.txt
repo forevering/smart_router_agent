@@ -1,0 +1,44 @@
+任务：使用 Python LangGraph 构建一个多级存储的智能路由 Agent。
+
+1. 状态定义 (Graph State)：
+- 必须包含 `messages` (短期对话), `user_id`, `long_term_memory`, `kg_context`, 和 `api_results`。
+- 使用 `Annotated[list, operator.add]` 管理消息流，确保状态正确合并。
+节点设计**：
+ - `summarizer`：分析对话，提取长期记忆事实。
+ - `kg_manager`：执行 KG 的增删改查（CRUD）。
+ - `router`：基于当前 query + 长期记忆 + KG 有效信息，选择 API。
+ - `api_executor`：模拟调用 3 个 API 服务。
+ - `generator`：整合所有信息输出答案。
+
+
+2. 内存层级设计：
+   - Short Term Memory (STM)：利用 LangGraph checkpoint 自动管理当前 thread_id 的消息流。
+   - Long Term Memory (LTM) :实现一个 `MemoryStore` 类，不仅存原始对话摘要，还要有 `extract_facts` 功能，将非结构化事实提取并作为外部持久化存储，通过 user_id 索引
+   - Temporal KG：基于对话抽取节点及关系。并对已有的KG进行时序有效性更新。作为外部持久化存储，通过 user_id 索引。
+
+3. 节点与流控逻辑 (Workflow)：
+   - Query 阶段：Agent 启动后，并行执行两个操作：
+       1. 检索 LTM 和 KG（现状查询：有什么查什么，不等待未完成的更新）。
+       2. 将检索到的内容与当前 STM（对话历史）一并交给 Router 节点。
+   - Parallel Service Execution 阶段：Router 并发调用选中的 API 服务，汇总结果。
+   - Output 阶段：Generator 生成回复并立即返回用户。
+   - Async Post-Process (异步后台)：通过 LangGraph 的并行边 (Parallel Edges)机制，实现 `summarizer` (更新长期记忆) 和 `kg_manager` (更新图谱) 的非阻塞运行：
+       - summarizer：提取本轮有用信息存入 LTM。
+       - kg_manager：根据本轮内容更新时序知识图谱。
+
+4. 时序知识图谱 (Temporal KG) 规范：
+   - Schema 要求：每个节点和关系必须包含 `active_start` (存储时的系统时间)；`active_end` 默认为 `None`。
+   - 更新规则：
+     1.插入新知识：设置 `active_start`为当前时间，`active_end` 置为 `None`。
+     2.知识冲突/失效：严禁删除旧数据。需找到匹配的旧节点/关系，将其 `active_end` 更新为当前时间.
+   - 查询规则：检索时必须传入 `reference_time`，仅返回 `active_start <= reference_time < (active_end or infinity)` 的有效内容。reference_time从对话中提取，若对话中reference_time为空，则默认为系统当前时间.
+
+5. 路由决策逻辑：
+   - Router 必须综合：当前问题 + STM (最实时) + LTM/KG (历史底色) 做出判断。即使 LTM/KG 为空，也应能根据 STM 正常工作。
+
+6. 代码产出要求**：
+- 假设 API 服务为：`WeatherProvider`, `UserCalendar`, `TravelConsultant`。
+- 演示一个复杂场景：用户问“我下周的旅行计划受天气影响吗？”，Router 需结合 KG（已知下周用户去上海）和 Calendar API 以及 Weather API 进行综合判定。
+- 代码注释需详细
+
+7. 你需要完全明确这份需求，才开始写代码。如果有任何疑问，你需要先向我提问，所有都疑问解答后，才开始写代码。

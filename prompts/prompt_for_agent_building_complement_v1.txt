@@ -1,0 +1,116 @@
+新增补充要求：MCP 与基于向量的 Tool Retrieval 架构
+
+1. 工具管理 (Tool Management)：
+   - 废弃硬编码 API 描述的方式。
+   - 实现一个 ToolRegistry 类作为所有工具的注册中心。
+   - 每个 Tool 必须包含 name, mcp_server_name, schema(需兼容 LangChain的 Pydantic 或标准 JSON Schema 格式) 以及 search_document (包含描述和几个典型 Use Case 字符串)。
+   - ToolRegistry 启动时，需将所有 Tool 的 search_document 转为 Embedding 并存入内存向量库 (如 FAISS 或简单的 Cosine Similarity 计算器)。
+   - 持久化向量库：Tool 的 search_document (包含描述和典型 Use Case) 及其 Embedding 必须存储在持久化的 Vector DB 中（如持久化目录的 ChromaDB），确保 Agent 重启后向量数据不丢失。
+   - 每个 Tool 在注册表中必须映射记录 name, mcp_server_name, schema (需兼容 LangChain Pydantic/JSON Schema 标准)。
+
+2. 节点更新：Tool Retriever Node：
+   - 在 Router 节点执行前，增加/合并一个工具检索逻辑。
+   - 必须先结合用户的 Query、拉取到的 LTM 和 KG 状态，使用一个轻量级的 LLM 生成一段 contextualized_query (例如："结合已知信息[下周去上海]，用户询问下周旅行天气")。目的是改写用户query，让改写后的query能更好地携带上下文信息。
+   - 使用 contextualized_query 的 Embedding 在 ToolRegistry 中检索 Top-K (如 Top-3) 最相关的 Tools。
+
+3. 节点更新：Router Node：
+   - Router 的 Prompt 保持通用，不再包含具体工具描述。
+   - 必须使用 langchain/langgraph生态的工具动态绑定 Top-K 工具。需在 Prompt 中明确告诫 Router：只调用真正能解决当前问题的工具，忽略不相关的召回工具。
+   - 返回结果必须是标准的 Tool Call 请求。
+
+
+
+4. 节点更新：原 api_executor 重构为 mcp_executor (通用工具执行节点)：
+   - 该节点现在必须是一个通用的 MCP 客户端代理 (MCP Client Proxy)。
+   - 动态路由执行：
+     1. 从 Router 节点生成的最后一条消息 (AIMessage) 中提取出所有的 tool_calls。
+     2. 遍历每一个 tool_call，提取出 tool_name 和对应的参数 arguments。
+     3. 通过前面定义的 ToolRegistry，查找该 tool_name 属于哪一个底层的 mcp_server。
+   - 模拟 MCP 调用标准：实现一个模拟的 mcp_call(server_name, tool_name, arguments) 函数，代表通过标准化协议向外部 MCP Server 发起 RPC 调用。
+   - 状态更新规范：将每个工具的返回结果严格封装为 LangChain/LangGraph 标准的 ToolMessage(content=..., tool_call_id=..., name=...)，并追加到 messages 状态流中，确保 generator 节点能够正确读取并融合这些外部工具的执行结果。
+
+5. 工具的热插拔、多对一关系与热更新机制 (Hot-Reload)：
+   - 多对一架构：明确 Tool 与 MCP Server 的关系。一个 MCP Server 可以包含多个 Tools。Agent 只需维护一个已订阅的 mcp_servers_config（记录了 Server 的连接地址或名称）。
+   - 数据面与控制面分离：Agent 的对话路由属于“数据面”；必须额外设计一个轻量级的 `AdminController`（管理控制端类/接口），充当“控制面”，用于接收外部的变动通知。
+   - 解耦与动态同步 API：Agent 主程序必须与工具代码解耦。在 ToolRegistry 中实现一个 sync_mcp_server(server_name) 的核心方法，用于在 Agent 不重启的情况下进行热更新。区分“新增”与“更新”的触发逻辑**：在 `ToolRegistry` 或 `AdminController` 中实现两个不同的核心方法，用于 Agent 主程序不重启的情况下的热更新：
+   - 1. 新增 Server (`register_new_mcp_server(server_name, connection_config)`)**：接收新服务器的名称和连接地址。记录到系统配置中，然后向该地址发请求获取 `tools/list`，生成并存储新工具的 `search_document` Embedding。
+   - 2. 刷新现有 Server (`refresh_mcp_server(server_name)`)：根据已有的 Server 记录，重新拉取 `tools/list`。对比本地持久化记录，找出新增或修改的 Tools，生成新的 Embedding 并Upsert（增量覆盖）到持久化 Vector DB 中。
+
+6. Prompt 的配置化管理与解耦 (Prompt-as-Config)
+   - 严禁硬编码：系统内所有涉及 LLM 的提示词（包括但不限于 `Tool Retriever` 的改写 Prompt、`Router` 的决策 Prompt、`Summarizer` 的提取 Prompt、`KG_Manager` 的图谱更新 Prompt 以及 `Generator` 的生成 Prompt）严禁硬编码在 Python 逻辑代码中。
+   - 外部配置文件：必须创建一个统一的配置文件（推荐命名为 `prompts.yaml`）来集中存储所有 Prompt 模板。使用 YAML 格式以支持清晰的多行文本。
+   - 动态变量注入：在 YAML 模板中必须保留明确的变量占位符（如 `{query}`, `{kg_context}`, `{ltm_context}`, `{tool_schemas}` 等）。在 Python 代码中，需实现一个通用的 `PromptLoader`，并结合 LangChain 的 `ChatPromptTemplate` 等标准生态类，将运行时参数安全、动态地注入到从 YAML 读取的模板中。
+    - Prompt 热加载：在 `AdminController` 中提供一个 `reload_prompts()` 的方法，允许系统在不重启的情况下重新读取 `prompts.yaml`，实现提示词的热更新生效。
+
+
+7. 核心演示场景更新 (模拟真实运维生命周期)：
+   - 请在 main 执行流程中，严格按照以下时间线模拟：
+   - 阶段 1：正常启动。Agent 初始化启动，加载现有的 Weather_Server (含查天气 tool) 和 Calendar_Server (含查日程 tool)，并将它们 Embedding 持久化到本地 Vector DB。
+   - 阶段 2：正常路由。用户提问：“我下周去上海，天气会影响我的旅行计划吗？” (需演示 KG 提取出“上海”，精准召回并调用 Calendar 和 Weather 工具)。
+   - 阶段 3：模拟管理员触发热更新 (关键！不重启 Agent)。
+     - 假设业务线有了变更。通过代码显式调用 `AdminController` 的接口：
+     a. 调 `register_new_mcp_server('Flight_Server', {'url': 'mock_flight_api'})` (模拟接入全新服务，含 `search_flight` 工具)。。
+     b. 调 `refresh_mcp_server('Weather_Server')` (模拟现有服务更新了代码，新增了一个 `get_typhoon_warning` 台风预警工具)。
+   - 需在终端日志中清晰打印出：系统接收到控制面指令，成功拉取新工具，并将新向量 Upsert 进了 Vector DB。
+   - 阶段 4：新能力即时生效。用户立刻提问：“帮我查一下去上海的航班，顺便看看有没有台风？” 
+   - Agent 能够通过向量检索，成功召回刚接入的 search_flight 和 get_typhoon_warning 工具，并正确生成动态路由调用参数。
+
+8. 你需要完全明确这份需求，才开始写代码。如果有任何疑问，你需要先向我提问，所有都疑问解答后，才开始写代码。
+
+
+
+Clarifying questions:
+(1)AdminController应该实现为什么形式
+**Custom Answer:** 
+ANS:
+核心控制逻辑必须实现为无状态的纯 Python 类（AdminController），保持业务纯粹性。同时，使用 FastAPI 为其提供一层 HTTP 包装（Admin REST API）。具体要求：Agent 启动时，主线程运行 LangGraph 的业务数据面，另一个后台线程（或异步 Task）启动 FastAPI 服务监听管理端口。当接收到外部 Webhook（如 `POST /admin/mcp/register` 或 `POST /admin/prompts/reload`）时，FastAPI 的路由函数去调用 `AdminController` 的 Python 方法。
+
+
+
+(2)重构后的 Graph 流转顺序是否如下？START → retrieve_Itm+retrieve_kg(并行) → tool_retriever → router → mcp_executor → generator → summarizer+kg_manager(并行) → END
+ANS:
+流转顺序需要调整。当前的直线工作流存在逻辑漏洞，且节点职责不够单一。
+期望的重构顺序如下：
+1. 增加独立的 `query_rewriter` 节点：在向量检索前，必须将改写逻辑独立为一个 Node。由该节点调用 LLM，融合原始 query、LTM 和 KG 状态，输出 `contextualized_query` 到 Graph State 中。
+2. 明确节点的单一职责：
+`START` -> `retrieve_ltm` + `retrieve_kg` (并行) -> `query_rewriter` -> `tool_retriever` (仅根据改写后的 query 进行向量检索) -> `router`。
+3. 在 router 后必须引入条件边 (Conditional Edge)：
+  - Router 绑定检索到的 tools 并输出判定后，必须通过 conditional_edge 进行分流判断：
+  - 分支 A (有工具调用)：如果 Router 的输出包含 `tool_calls`，则路由到 `mcp_executor`，执行完毕后再流转到 `generator` 进行信息整合。
+  - 分支 B (无工具调用)：如果 Router 判定不需要工具（如闲聊或信息已足够），则直接跳过 `mcp_executor`，直接路由到 `generator` 节点生成最终回复。
+4. 最终的收尾工作：
+  `generator` -> `summarizer` + `kg_manager` (异步/并行，不阻塞返回) -> `END`。
+5.请务必按照以下规范重构 `mcp_executor` 节点及 Graph 的连线逻辑，以支持真实生产环境中的复杂工具调用:
+  a. 独立无依赖的工具调用（在 Node 内并发执行）
+  - 当 Router 在单次回合中输出多个 `tool_calls` 时（说明工具间无依赖），`mcp_executor` 必须使用 `asyncio.gather`（或并发线程池）对它们进行并发调用，绝不能使用同步的 for 循环串行阻塞。
+  - 收集所有并发执行的结果，封装为多个 `ToolMessage` 追加到状态流中
+  b. 具有依赖关系的 Sequential 工具调用（靠 Graph 循环实现）
+  - 严禁在 `mcp_executor` 中编写任何复杂的串行依赖判断逻辑。串行依赖必须交由 LLM 多轮推理和 Graph 的**循环边 (Loop Edge)** 来实现。
+  - 流转要求:
+    - 从 `router` 节点出来必须是条件边 (Conditional Edge)：
+      - 分支 A (有工具需调用)：流向 `mcp_executor`。
+      - 分支 B (任务已完成/不需要工具)：直接流向 `generator`。
+    - (核心必须严格遵守) 从 `mcp_executor` 节点出来，绝对不能直接流向 `generator`，必须无条件回流 (Edge) 到 `router` 节点。
+
+
+
+(3)register/refresh_mcp_server 需要请求 tools/list。我打算创建 MockMCPServerHub 内部维护各 Server 的 tool 清单模拟远程拉取，是否符合预期？
+1 是，用 Mock 模拟即可
+2 需要真实 HTTP 调用
+3 Enter custom answer
+**Custom Answer:**
+ANS:
+是的，为了降低 Demo 运行复杂度，完全可以创建 `MockMCPServerHub` 在内部模拟拉取。但是，该 Mock 必须具备严格的“网络边界感”，以便未来零成本切换到真实的 MCP Client：
+1. 异步模拟：拉取工具列表的方法（如 `fetch_tools_list`）和执行工具的方法（如 `execute_tool`）必须是 `async` 异步函数，模拟真实的网络 I/O。
+2. 数据格式严格隔离：Mock 绝对不能直接返回 Python Callable 对象。它返回的 `tools/list` 数据必须是符合标准 MCP 协议的 **JSON/Dict 结构（包含标准的 JSON Schema）。
+3. 适配器模式：在 Agent 代码中，必须通过一个统一的接口/基类（例如 `MCPClientAdapter`）去调用这个 MockHub。这样未来我们接入真实的 HTTP/Stdio MCP 服务时，只需要替换这个 Adapter 的底层实现，上层 Agent 的代码一行都不需要改。
+
+
+(4)现有的 memory_store.py 和 temporal_kg.py 是否保持不变，仅修改 nodes/graph/api_services 和新增相关文件？
+1 是，保持不变
+2 需要重构
+3 Enter custom answer
+ANS:
+核心的业务规则保持不变，但必须进行以下局部重构以适配新的全局架构：
+1. Prompt 彻底解耦：仔细检查这两个文件中是否硬编码了用于“事实提取 (extract_facts)”或“图谱抽取”的 LLM 提示词。如果有，必须全部抽离到 `prompts.yaml` 中，并通过统一的配置加载机制读取。
+2. 异步与并发安全 (Async/Thread-safe)：由于 `summarizer` 和 `kg_manager` 现在在 LangGraph 中以异步/并行边的方式运行，请务必确保这两个底层类在进行持久化写操作（数据库或本地文件）时是并发安全的。

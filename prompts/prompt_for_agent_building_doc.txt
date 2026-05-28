@@ -1,0 +1,67 @@
+任务指令：撰写企业级项目交接文档 (README & Architecture Docs)
+ 
+本项目（Smart Router Agent）的核心开发已经完成，即将进行团队交接。请作为资深架构师和技术主笔，为本项目输出一份高质量、结构化的 Markdown 格式技术文档。
+ 
+请将文档按照以下核心结构进行编排（输出为一个极其详尽的 `README.md` 或拆分为核心几个 `.md` 文件）：
+ 
+一、 项目概述与核心特性 (Overview)
+ - 一句话总结：基于 LangGraph 与官方 MCP 协议构建的、具备长短期记忆（LTM+Temporal KG）和百万级工具路由能力的云原生 AI 网关。
+ - 列出核心闪光点：例如 领域驱动设计(DDD)、无状态工具注册表(Qdrant Payload)、官方 SSE 长连接池管理、控制面与数据面解耦、零停机热插拔等。
+ 
+二、 目录结构说明 (Project Structure)
+ - 使用树状图展示当前最新的、按领域 (DDD) 划分的目录结构（如 config, memory, tools, admin, core）。
+ - 简要说明每个包（Package）的职责，帮助新人快速定位代码。
+ 
+三、 核心架构设计 (Architecture Deep Dive)
+ 请用文字（或 Mermaid 图）详细阐述以下流转逻辑：
+ 1. 双层记忆架构：当前对话 (STM) + 本地 SQLite 存储的长期记忆事实 (LTM) + 时序知识图谱 (Temporal KG)。
+ 2. 两阶段路由与执行 (RAG for Tools)：Contextualized Query -> Qdrant 向量召回 Top-K -> LLM 决策 -> `mcp_executor` 并发执行。
+ 3. MCP 通信机制：说明系统如何通过 `HttpMCPClient` (基于官方 Python SDK) 与外部微服务 (SSE 协议) 通信，并强调长连接池与懒加载机制。
+ 
+四、 启动与部署指南 (Quick Start)
+ - 环境准备：所需的 Python 版本、第三方依赖（LangGraph, qdrant-client, mcp, fastapi 等）。
+ - 演示模式 (`demo_main.py`)：说明该脚本如何自动拉起子进程 (`mock_mcp_servers.py`)，并执行端到端四阶段剧本测试。
+ - 生产模式 (`server_main.py`)：说明如何基于 `mcp_servers_config.json` 启动，并保持后台常驻。
+ 
+五、 运维与热插拔操作手册 (Operator Manual) - 极其重要！
+ 请为运维和接手同事写清楚，当外部业务部门新增了 API 时，系统应该如何进行“零停机热插拔”：
+ 1. 方案 A (最常见)：修改现有的 MCP Server 代码并重启，然后调用 Agent 的 `POST /admin/refresh_mcp_server` 接口刷新工具。
+ 2. 方案 B (全新接入)：启动全新的 MCP Server 后，配置 `mcp_servers_config.json`，并调用注册接口。
+ - 请附上具体的 `curl` 命令示例，展示如何与 FastAPI 构建的 Admin 控制台交互，以及如何实现提示词的热加载 (`reload_prompts`)。
+ 
+要求：
+文档风格必须专业、严谨。如果需要，可使用 Markdown 的 `> Note` 引用块来标注生产环境防坑指南（如长连接负载均衡、OOM 防御等）。
+
+Task Directive: Write Enterprise-Grade Project Handover Documentation (README & Architecture Docs)
+ 
+The core development of the "Smart Router Agent" project is now complete, and we are preparing for a team handover. Please act as a Principal Architect and Technical Writer to produce a high-quality, structured Markdown technical document for this project.
+ 
+Please format the documentation using the following core structure (output as a highly detailed `README.md` or split into a few core `.md` files):
+ 
+I. Project Overview & Core Features
+ - One-line summary: A cloud-native AI gateway built on LangGraph and the official Model Context Protocol (MCP), featuring long-/short-term memory (LTM + Temporal KG) and highly scalable tool routing capabilities.
+ - Core Highlights: Highlight key technical achievements such as Domain-Driven Design (DDD), Stateless Tool Registry via Qdrant Payload, Official SDK SSE Connection Pooling, Decoupled Control/Data Planes, and Zero-Downtime Hot-Plugging.
+ 
+II. Project Structure
+ - Provide a tree diagram showing the latest DDD-based directory layout (e.g., `config`, `memory`, `tools`, `admin`, `core`).
+ - Briefly explain the responsibilities of each package to help newcomers quickly navigate the codebase.
+ 
+III. Core Architecture Deep Dive
+ Use clear textual explanations (or Mermaid diagrams if applicable) to detail the following workflows:
+ 1. Memory Architecture: Short-Term Memory (STM) + SQLite-persisted factual memory (LTM) + Temporal Knowledge Graph (Temporal KG).
+ 2. Two-Stage Routing & Execution (RAG for Tools):** Contextualized Query -> Qdrant Top-K Vector Retrieval -> LLM Routing Decision -> Concurrent execution via `mcp_executor`.
+ 3. MCP Communication Mechanism: Explain how the `HttpMCPClient` (using the official Python SDK) communicates with external microservices via the SSE protocol. Strongly emphasize the long-connection pool, lazy loading, and idle-timeout mechanisms.
+ 
+IV. Quick Start & Deployment Guide
+ - Prerequisites: Required Python version and key dependencies (LangGraph, qdrant-client, mcp, fastapi, etc.).
+ - Demo Mode (`demo_main.py`): Explain how this script automatically spins up a background subprocess (`mock_mcp_servers.py`) and executes the 4-stage End-to-End (E2E) testing scenario.
+ - Production Mode (`server_main.py`): Explain how to boot the system based on `mcp_servers_config.json` and keep it running as a background daemon.
+ 
+V. Operator Manual & Hot-Plugging Guide (Crucial)
+ Please provide clear, step-by-step instructions for DevOps and developers on how to perform "Zero-Downtime Hot-Plugging" when external business teams add new APIs:
+ 1. Scenario A (Update Existing): Modify the existing MCP Server code and restart it, then call the Agent's `POST /admin/mcp/refresh/{server_name}` endpoint to sync tools.
+ 2. Scenario B (New Integration): Start a brand-new MCP Server, update `mcp_servers_config.json`, and call the register API.
+ - Provide concrete `curl` command examples demonstrating how to interact with the FastAPI Admin console (e.g., triggering MCP refreshes and hot-reloading prompts via `reload_prompts`).
+ 
+Formatting & Tone Requirements:
+The document must be highly professional, rigorous, and ready for an enterprise environment. Use Markdown blockquotes (e.g., `> Note:`) to highlight production gotchas and architectural decisions (such as preventing OOM with stateless registries, or K8s load-balancing considerations for SSE connections).

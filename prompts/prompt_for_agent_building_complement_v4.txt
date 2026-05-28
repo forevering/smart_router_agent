@@ -1,0 +1,24 @@
+工程化重构指令：按领域驱动 (DDD) 规范整理目录结构
+
+1. 目标目录结构
+ 请在 `smart_router_agent` 包下创建以下子包（请务必在每个目录下生成 `__init__.py`）：
+ - `config/`: 存放 `config.py`, `prompt_loader.py`, `prompts.yaml`, `mcp_servers_config.json`
+ - `memory/`: 存放 `memory_store.py`, `temporal_kg.py`
+ - `tools/`: 存放 `tool_registry.py`, `mcp_client.py`, `mock_mcp_servers.py`
+ - `admin/`: 存放 `admin_controller.py`, `admin_api.py`
+ - `core/`: 存放 `graph.py` (以及后续抽离的 node 逻辑)
+ - **根目录**: 保留 `demo_main.py` 和 `server_main.py` 作为程序的启动入口。
+ 
+2. 必须修复依赖引用 (Imports)
+ - 移动文件后，请务必全局更新所有文件中的 `import` 语句，使用绝对导入（例如 `from smart_router_agent.tools.tool_registry import ToolRegistry`）。
+ - 特别注意 `core/graph.py` 中的导包，它会依赖大量其他模块，切勿遗漏。
+ 
+3. 必须修复物理文件路径 (File Paths)
+ - 由于文件位置发生了改变，原本代码中通过 `__file__` 获取的相对路径（如加载 `prompts.yaml` 或 SQLite DB 的路径）大概率会报错。
+ - 请在 `config.py` 中统一定义一个 `BASE_DIR`（指向项目的根目录），并在读取外部文件时全部基于 `BASE_DIR` 进行绝对路径拼接（如 `os.path.join(BASE_DIR, "config", "prompts.yaml")`）。
+ 
+4. 子进程调用的路径修正
+ - 在 `demo_main.py` 中，原来通过 `subprocess.Popen` 启动 `mock_mcp_servers.py` 的模块名需更新为：`smart_router_agent.tools.mock_mcp_servers`。
+ 
+请在保证系统依然能 100% 成功运行 `demo_main.py` 的前提下，完成本次目录重构。你需要完全明确这份需求，才开始写代码。如果有任何疑问，你需要先向我提问，所有都疑问解答后，才开始写代码。
+

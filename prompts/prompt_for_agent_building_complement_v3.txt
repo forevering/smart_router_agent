@@ -1,0 +1,109 @@
+核心架构重构指令：全面接入官方 MCP SDK 与云原生连接池管理
+当前系统的 `HttpMCPClient` 采用了伪造的 RESTful API (`httpx.post`)，这违背了 MCP 官方标准（基于 JSON-RPC 和 SSE/Stdio），且缺乏在多 Pod (K8s) 环境下的高可用管理机制。
+请严格按照以下生产级规范，对底层通信架构进行全面重构（禁止打补丁，请从底层逻辑重新实现）：
+ 
+1. 构建真实的领域驱动 MCP Server (`mock_mcp_servers.py`)
+为了彻底验证真实 MCP 协议，必须独立于 Agent 核心新建一个 Server 运行脚本。该脚本模拟 AI 团队维护的 BFF (AI 网关) 层：
+ - 使用官方 SDK：必须引入官方 Python MCP SDK（如 `mcp.server.fastapi` 或 `mcp.server.sse`）。
+ - 领域分组 (DDD)：实例化两个完全独立的 MCP Server 对象：
+   - `Weather_Server`：包含 `get_weather` 和 `get_typhoon_warning` 工具。
+   - `Travel_Server`：包含 `get_schedule` 和 `search_flight` 工具。
+ - 单端口多路径挂载：使用单个 FastAPI 实例监听 `8200` 端口，将这两个 Server 挂载到不同的路径：
+   - `/weather/sse` 及 `/weather/messages`
+   - `/travel/sse` 及 `/travel/messages`
+ - 工具注册：使用 SDK 官方的装饰器（如 `@server.tool()`）将原有的模拟函数挂载为标准 MCP 工具。
+ 
+2. 接口隔离与 `mcp_client.py` 核心协议重构
+彻底废弃原有的 `httpx` 实现，将 `HttpMCPClient` 改造为真正的官方 MCP 客户端：
+ - 完善基类接口：在 `MCPClientAdapter` 中补充抽象方法 `@abstractmethod def register_server(self, server_name: str, connection_config: Dict[str, Any]): pass`，确保上层不依赖具体实现。
+ - 使用官方 SSE Client：必须使用 `mcp.client.sse.sse_client` 和 `mcp.client.session.ClientSession` 来建立连接和完成 `session.initialize()` 握手。
+ - 数据格式剥离 (Data Mapping)：官方 SDK 的 `list_tools()` 和 `call_tool()` 返回的是强类型对象（如 `ListToolsResult`）。在 `HttpMCPClient` 返回结果给 Agent 之前，**必须将其反序列化/剥离为原生的 Python `Dict` 格式**，严禁让特定 SDK 的类污染 LangGraph 的流转状态。
+
+3. K8s 生产级长连接池管理 (解决负载均衡失效与雪崩)
+官方 MCP 走的是长连接。为了防止在集群环境中引发连接风暴和负载不均衡，`HttpMCPClient` 必须实现以下连接池 (`_sessions` 字典) 的管理机制：
+ - 懒加载 (Lazy Initialization)：`register_server` 时仅保存配置。只有在首次调用 `fetch_tools_list` 或 `execute_tool` 时，才动态建立 SSE 连接并完成握手。
+ - 空闲回收 (Idle Timeout/TTL)：为每个 Session 记录 `last_active_time`。使用 `asyncio.create_task` 启动一个后台清理协程，定期（如每 60 秒）扫描连接池。若某个连接空闲超过指定阈值（如 10 分钟），必须**主动关闭连接并从池中剔除**，以便 K8s 能够重新进行负载均衡。
+ - 防雪崩重试 (Jitter Retry)：在调用工具时，若检测到长连接已断开，捕获异常后必须引入随机休眠时间（如 `asyncio.sleep(random.uniform(0.1, 0.5))`）再发起重连。严禁无脑重连导致的瞬时洪峰打挂 Server。
+
+4. 联调配置对接
+确保 `demo_main.py` 或测试剧本生成的配置能够被新工厂正确解析并路由至真实的 HTTP 实现：
+```json
+ {
+   "Weather_Server": {
+     "transport": "http",
+     "url": "http://127.0.0.1:8200/weather/sse"
+   },
+   "Travel_Server": {
+     "transport": "http",
+     "url": "http://127.0.0.1:8200/travel/sse"
+   }
+ }
+ ```
+ MCPClientFactory 需根据 `transport: http` 正确分发给改造后的 `HttpMCPClient`。
+
+5.`demo_main.py` 必须进行真实的端到端（E2E）网络集成验证
+请按照以下方式重写 `demo_main.py`：
+ - 自动启停真实服务端 (Subprocess)：
+   - 在 `demo_main.py` 执行 `AdminController.init_from_config` 之前，必须使用 `subprocess.Popen` 在后台自动启动 `mock_mcp_servers.py` 服务（监听 8200 端口）。
+    - 在启动后适当 `await asyncio.sleep(2)` 等待端口就绪。
+    - 必须使用 `try...finally` 或 `atexit`，确保在 Demo 运行结束后（无论成功报错），优雅地 kill 掉这个后台 MCP Server 子进程。
+ - 使用 HTTP Transport 的真实配置：
+    - `demo_main.py` 内部生成的 `demo_config.json`（传入 `init_from_config` 的字典），必须强制使用 `transport: http`。
+    - 例如：
+      ```python
+      mock_config = {
+          "Weather_Server": {"transport": "http", "url": "http://127.0.0.1:8200/weather/sse"},
+          "Calendar_Server": {"transport": "http", "url": "http://127.0.0.1:8200/travel/sse"}
+      }
+      ```
+ - 验证链路：通过这种方式，强制 Agent 的 `MCPClientFactory` 将流量路由给新建的 `HttpMCPClient`，进行真实的 SSE 连接、握手和 JSON-RPC 调用。彻底验证连接池与官方 MCP SDK 的集成是否正确无误。
+
+6. 你需要完全明确这份需求，才开始写代码。如果有任何疑问，你需要先向我提问，所有都疑问解答后，才开始写代码。
+
+
+
+query: 用python mcp sdk的哪个版本
+ANS:
+请安装最新的稳定版（如 `mcp>=1.0.0` 以确保 API 的确定性）。
+此外，由于我们的架构不仅包含基于长连接的 Client，还要实现基于 FastAPI/Starlette 的 SSE Server，请不要安装无用的 `[cli]` 扩展，而是必须在依赖清单（如 `requirements.txt` 或构建环境）中一并包含以下依赖包：
+1. `mcp` (最新稳定版)
+2. `fastapi` 和 `uvicorn` (用于宿主并启动 mock_mcp_servers.py)
+3. `httpx` (用于底层的异步网络请求机制)
+请基于这些依赖的最新稳定版 API 表面（API Surface）来编写代码。
+
+query: search_document field 如何处理
+ANS:
+1. 服务端融合 (Server-side)：在编写 `mock_mcp_servers.py` 时，将我们原本设计的 rich search content（基础描述 + 典型用例 Use Cases）全部合并写进官方的 `description` 字段中。
+2. 客户端映射 (Client-side)：在 Agent 端的 `AdminController` 处理拉取到的工具列表时，直接将官方的 `description` 字段赋值给 `ToolDefinition` 的 `search_document` 属性用于 Embedding 向量化（即 `search_document = tool.description`）。
+3. 架构收益：这不仅完全兼容了 MCP 官方 Schema，而且是一项大模型工具调用的最佳实践——Router LLM 在最终执行 `bind_tools` 时，也能读取到包含 Use Cases 的丰富 `description`，从而做出更精准的路由决策。
+
+
+query: server-side uses Travel_server. Agent config key: Tranver Server or keep Calendar_server
+ANS:
+必须全面使用 Travel_Server (match server DDD)。请彻底废弃 Calendar_Server 这个旧命名。
+为了保证演示剧本 (`demo_main.py`) 的连贯性，请在代码中做如下同步修改：
+ 1. 全局替换：确保所有配置文件、AdminController 注册以及日志打印中，全部统一使用 `Travel_Server`。
+ 2. 调整 Demo 时间线逻辑：
+    - 阶段 1（冷启动）：配置并加载 `Weather_Server` (仅含查天气) 和 `Travel_Server` (仅含查日程)。
+    - 阶段 3（热更新）：模拟远端服务升级，调用 `refresh_mcp_server`。此时 `Weather_Server` 新增了查台风，`Travel_Server` 新增了查航班。
+这样做既坚持了正确的 DDD 领域驱动命名，又完美契合了我们要演示的微服务热更新能力。
+
+query: Demo now uses real HTTP. Keep MockMCPServerHub + mock transport in Factory?
+ANS:
+请彻底移除 (Remove entirely) `MockMCPServerHub` 以及内存级别的 mock transport。
+架构考量与要求：
+1. 避免维护两套 Mock：为了遵守 DRY 原则，我们统一使用 `mock_mcp_servers.py` 作为整个系统的单一 Mock 源（Single Source of Truth），避免本地数据与网络数据不同步的问题。
+2. 保留并升级 Factory：请不要删除 `MCPClientFactory`，而是将其重构为面向官方 MCP 协议的传输路由器。
+    - 当前，当配置文件中的 `"transport" == "http"` 或 `"sse"` 时，将其路由给我们重构后的、基于官方 SDK 的 `HttpMCPClient`。
+    - 预留一个抛出 `NotImplementedError` 的分支给 `"transport" == "stdio"`（官方的本地标准输入输出协议），为未来扩展本地工具打下基础。
+3. 代码清理：清空 `mcp_client.py` 中所有关于硬编码天气、日程字典的代码，让该文件变成纯粹且干净的官方协议网络通信中间件。
+
+
+
+query: Old main.py exists alongside demo_main.py. Delete or keep?
+ANS:
+请彻底删除旧的 `main.py` (Delete it entirely)。
+工程规范考量：
+1. 依靠版本控制：在现代工程实践中，废弃代码的历史回溯应交由 Git 管理，绝不在代码库中遗留 dead code 作为参考。
+2. 防止误导与误执行：旧的 `main.py` 包含了已经被彻底废弃的单机 Mock 逻辑和危险的数据库清空操作。保留它会破坏当前严格的架构边界，并对未来的项目维护者造成严重误导。
+3. 入口清晰化：请确保项目根目录下，关于 Agent 的启动入口有且仅有 `demo_main.py` 和 `server_main.py` 这两个职责明确的文件。
