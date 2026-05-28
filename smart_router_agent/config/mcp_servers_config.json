@@ -1,0 +1,12 @@
+{
+    "mcpServers": {
+        "Weather_Server": {
+            "transport": "http",
+            "url": "http://127.0.0.1:8200/weather/sse"
+        },
+        "Travel_Server": {
+            "transport": "http",
+            "url": "http://127.0.0.1:8200/travel/sse"
+        }
+    }
+}
