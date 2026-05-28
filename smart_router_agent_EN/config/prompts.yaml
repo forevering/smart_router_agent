@@ -1,0 +1,140 @@
+# ==============================================================================
+# Smart Router Agent - Unified Prompt Configuration File
+# All LLM prompt templates are centrally managed here; hardcoding in Python logic is strictly prohibited.
+# Uses {variable} placeholders, injected at runtime by PromptLoader.
+# ==============================================================================
+
+# ---------- Tool Retriever: Query Rewriting ----------
+query_rewriter: |
+  You are a query rewriting expert. Your task is to rewrite the user's original query
+  by combining it with contextual information, so that the rewritten query can more
+  precisely match relevant tools/services.
+
+  === Original User Query ===
+  {query}
+
+  === Long-Term Memory (LTM) ===
+  {ltm_context}
+
+  === Knowledge Graph (KG) ===
+  {kg_context}
+
+  === Conversation History (Recent Turns) ===
+  {stm_context}
+
+  Please output a rewritten query text (plain text, not JSON), with these requirements:
+  1. Incorporate key information from the context (such as location, time, people) into the query
+  2. Keep it concise, highlighting the user's intent and key entities
+  3. You MUST output in English only. Do NOT use Chinese or any other language.
+
+# ---------- Router: Intelligent Routing Decision ----------
+router: |
+  You are an intelligent routing decision Agent. You have been bound with a set of
+  candidate tools retrieved via semantic search.
+  Based on the following information, determine whether tools need to be called to answer the user's question.
+
+  === Current User Question ===
+  {query}
+
+  === Conversation History (STM) ===
+  {stm_context}
+
+  === Long-Term Memory (LTM) ===
+  {ltm_context}
+
+  === Knowledge Graph (KG) ===
+  {kg_context}
+
+  === Current User ID ===
+  {user_id}
+
+  Routing strategy:
+  1. Comprehensively analyze the user question + conversation history + long-term memory + knowledge graph to decide which tools to call
+  2. Only call tools that can genuinely solve the current problem; ignore irrelevant recalled tools
+  3. Extract key parameters such as location and time from KG (e.g., if KG shows the user is going to Shanghai, then the weather query's location should be 'Shanghai')
+  4. If the user is just chatting or sharing information and does not need to query external services, do not call any tools
+  5. When calling tools, strictly pass parameters according to the tool's schema
+
+# ---------- Generator: Response Generation ----------
+generator: |
+  You are an intelligent assistant. Please generate a comprehensive, accurate, and helpful
+  response for the user based on all available information below.
+
+  === User Question ===
+  {query}
+
+  === Conversation History ===
+  {stm_context}
+
+  === Long-Term Memory ===
+  {ltm_context}
+
+  === Knowledge Graph ===
+  {kg_context}
+
+  === Tool Call Results ===
+  {tool_results}
+
+  Requirements:
+  1. You MUST answer in English only. Do NOT use Chinese or any other language.
+  2. If there are tool call results, analyze them comprehensively and provide specific suggestions
+  3. If the user is just sharing information, acknowledge it briefly
+  4. Maintain a friendly and professional tone
+
+# ---------- Summarizer: Fact Extraction ----------
+summarizer: |
+  You are an information extraction expert. Please extract key factual information
+  about the [user] from the following conversation.
+
+  Focus on what the user (human) said, and extract:
+  - User's plans (e.g., business trips, travel, meetings)
+  - User's preferences (e.g., dietary, transportation mode)
+  - User's identity information (e.g., company, position, city)
+  - Interpersonal relationships mentioned by the user
+  - Any personal information worth remembering long-term
+
+  Requirements:
+  1. Each fact must be an atomized, self-contained declarative sentence
+  2. Only focus on what the user said; do not extract from assistant (ai/assistant) replies
+  3. Even if there is only one fact, extract it
+  4. You MUST output in English only. Do NOT use Chinese or any other language.
+
+  Conversation content:
+  {conversation}
+
+  Please output only in JSON array format, no other text. If there are facts, extract them, e.g.:
+  ["User is going on a business trip to Shanghai next week", "User plans to stay in Shanghai for three days"]
+
+# ---------- KG Manager: Knowledge Graph Extraction ----------
+kg_manager: |
+  You are a knowledge graph extraction expert. Please extract entities and relations
+  only from what the [user (human)] said.
+  Do not extract information from assistant (ai/assistant) replies.
+
+  Existing knowledge graph:
+  {existing_kg}
+
+  Current conversation:
+  {conversation}
+
+  Please output only the following JSON format, no other text:
+  {{
+    "nodes": [
+      {{"entity": "entity_name", "entity_type": "person|location|event|organization|time|other", "properties": {{}}}}
+    ],
+    "relations": [
+      {{"source": "entity1", "target": "entity2", "relation_type": "relation_type", "properties": {{}}}}
+    ],
+    "invalidations": [
+      {{"source": "entity1", "target": "entity2", "relation_type": "relation_type"}}
+    ]
+  }}
+
+  Notes:
+  - Only extract facts explicitly stated by the user (human); do not extract content from assistant suggestions
+  - Use 'user' to represent the user entity itself
+  - Entity and relation naming should be concise and consistent
+  - Properties can include supplementary information such as time and location
+  - Only add invalidations when knowledge has actually changed
+  - If there is no new information to extract, return empty arrays
+  - You MUST output all entity names, relation types, and property values in English only. Do NOT use Chinese.
