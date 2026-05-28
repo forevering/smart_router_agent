@@ -1,0 +1,243 @@
+  [Demo] Starting Mock MCP Server subprocess (port 8200)...
+======================================================================
+  Smart Router Agent — E2E Demo (Official MCP SDK)
+======================================================================
+
+======================================================================
+  🚀 Phase 1: Cold Start — Initializing all components
+======================================================================
+  [Demo] Mock MCP Server is ready
+  Cleaned up old database: c:\Users\ZHV1HK\OneDrive - Bosch Group\project\agentic_portal_mbdo3\smart_router_agent_EN\agent_data.db
+  Cleaned up old Qdrant data: c:\Users\ZHV1HK\OneDrive - Bosch Group\project\agentic_portal_mbdo3\smart_router_agent_EN\qdrant_data
+  LLM ready
+  Loading Embedding model...
+Loading weights: 100%|████████████████████████████████| 199/199 [00:00<00:00, 8848.46it/s]
+  [Embedding] Model loaded: paraphrase-multilingual-MiniLM-L12-v2 (dim=384)
+  Qdrant ready (c:\Users\ZHV1HK\OneDrive - Bosch Group\project\agentic_portal_mbdo3\smart_router_agent_EN\qdrant_data)
+c:\Users\ZHV1HK\OneDrive - Bosch Group\project\agentic_portal_mbdo3\smart_router_agent_EN\memory\memory_store.py:85: FutureWarning: The `get_sentence_embedding_dimension` method has been renamed to `get_embedding_dimension`.
+  self.embedding_dim = embedding_model.get_sentence_embedding_dimension()
+c:\Users\ZHV1HK\OneDrive - Bosch Group\project\agentic_portal_mbdo3\smart_router_agent_EN\memory\temporal_kg.py:84: FutureWarning: The `get_sentence_embedding_dimension` method has been renamed to `get_embedding_dimension`.
+  self.embedding_dim = embedding_model.get_sentence_embedding_dimension()
+  LTM + KG ready
+  [PromptLoader] Loaded 5 prompt templates
+c:\Users\ZHV1HK\OneDrive - Bosch Group\project\agentic_portal_mbdo3\smart_router_agent_EN\tools\tool_registry.py:79: FutureWarning: The `get_sentence_embedding_dimension` method has been renamed to `get_embedding_dimension`.
+  self._embedding_dim = embedding_model.get_sentence_embedding_dimension()
+  [AdminController] Initializing 2 MCP Server(s) from config...
+
+  [AdminController] >>> Registering MCP Server 'Weather_Server'
+  [AdminController] Fetched 1 tools
+  [ToolRegistry] Batch registered/updated 1 tools
+  [AdminController] <<< 'Weather_Server' registration complete, 1 tools ready
+
+
+  [AdminController] >>> Registering MCP Server 'Travel_Server'
+  [AdminController] Fetched 1 tools
+  [ToolRegistry] Batch registered/updated 1 tools
+  [AdminController] <<< 'Travel_Server' registration complete, 1 tools ready
+
+  [AdminController] Config initialization complete
+  [AdminAPI] HTTP service started: http://127.0.0.1:8100
+  LangGraph build complete
+
+======================================================================
+  📍 Round 1: User shares business trip plan (building knowledge graph)
+======================================================================
+
+  👤 User: I'm going on a business trip to Shanghai next week, staying for about three days.
+
+  [Retrieve] KG semantic search complete (0 entities, 0 relations, 0-hop expansion)
+  [Retrieve] LTM semantic search complete (0 relevant facts)
+  [QueryRewriter] Original: I'm going on a business trip to Shanghai next week, staying for about three days.
+  [QueryRewriter] Rewritten: Business trip to Shanghai next week for three days.
+  [ToolRetriever] Retrieved Top-2 tools: get_schedule, get_weather
+  [Router] Dynamically bound 2 tools: get_schedule, get_weather
+  [Router] Decision: calling tools get_schedule, get_weather
+  [MCPExecutor] Executing 2 tool calls concurrently...
+  [MCPExecutor] get_schedule@Travel_Server call complete
+  [MCPExecutor] get_weather@Weather_Server call complete
+  [Router] Dynamically bound 2 tools: get_schedule, get_weather
+  [Router] Decision: no tool calls needed
+
+  🤖 Assistant: Thank you for sharing your upcoming business trip details to Shanghai. Here's a comprehensive overview based on your schedule and the weather forecast:
+
+### Schedule Overview:
+- **May 26, 2026**: 
+  - **09:00-12:00**: You have a client visit with Mr. Zhang at Lujiazui, Pudong New Area, Shanghai.
+- **May 27, 2026**: 
+  - **14:00-16:00**: A project review meeting is scheduled at the Shanghai office.
+- **May 28, 2026**: 
+  - **10:00-11:30**: You will be negotiating with a supplier in Minhang District, Shanghai.
+- **May 29, 2026**: 
+  - Your return trip is flexible, allowing you to adjust as needed.
+
+### Weather Forecast:
+- **May 26, 2026**: Expect cloudy weather with temperatures ranging from 18°C to 26°C and a 20% chance of rain.
+- **May 27, 2026**: Light rain is forecasted, with temperatures between 17°C and 23°C and a 75% chance of rain.
+- **May 28, 2026**: Moderate rain is expected, with temperatures from 16°C to 21°C and a 90% chance of rain.
+- **May 29, 2026**: The weather will be overcast to cloudy, with temperatures ranging from 17°C to 24°C and a 30% chance of rain.
+- **May 30, 2026**: Sunny weather is predicted, with temperatures between 19°C and 28°C and only a 5% chance of rain.
+
+### Recommendations:
+- **Umbrella**: Given the high probability of rain on May 27 and May 28, it's advisable to bring an umbrella to stay dry during your meetings.
+- **Attire**: Dress in layers to accommodate the varying temperatures and potential rain. A light waterproof jacket could be beneficial.
+- **Travel Flexibility**: With your return trip being flexible, consider adjusting your plans based on weather conditions or any last-minute business needs.
+
+I hope this information helps you prepare effectively for your trip. If you have any further questions or need additional assistance, feel free to ask. Safe travels!
+  [Background-LTM] L1 stored 6 conversation messages
+  [Background-LTM] L2 extracted 2 facts, actually stored 2 (after dedup)
+  [KG] Update complete: invalidated 0 relations, added 3 nodes, added 2 relations
+  [Background-KG] Knowledge graph update process complete
+
+----------------------------------------
+  📦 After Round 1: Storage state
+----------------------------------------
+
+  Long-term memory (2 items):
+    • [0.858] User is going on a business trip to Shanghai next week
+    • [0.642] User plans to stay in Shanghai for about three days
+
+  Knowledge graph (3 entities, 2 relations):
+    [Entity] Shanghai (location)
+    [Entity] business trip (event)
+    [Entity] user (person)
+    [Relation] business trip --[destination]--> Shanghai
+    [Relation] user --[going_on]--> business trip
+
+======================================================================
+  📍 Phase 2: Normal Routing — Weather inquiry
+======================================================================
+
+  👤 User: I'm going to Shanghai next week, will the weather affect my travel plans?       
+
+  [Retrieve] LTM semantic search complete (2 relevant facts)
+  [Retrieve] KG semantic search complete (2 entities, 1 relations, 1-hop expansion)
+  [QueryRewriter] Original: I'm going to Shanghai next week, will the weather affect my travel plans?
+  [QueryRewriter] Rewritten: Will the weather in Shanghai next week affect my business trip plans, including meetings with Mr. Zhang and others, given the forecasted rain on May 27 and May 28?
+  [ToolRetriever] Retrieved Top-2 tools: get_weather, get_schedule
+  [Router] Dynamically bound 2 tools: get_weather, get_schedule
+  [Router] Decision: no tool calls needed
+
+  🤖 Assistant: Based on the weather forecast for your business trip to Shanghai next week, it seems that the weather might indeed affect your travel plans, particularly on May 27 and May 28. Here's a detailed overview:
+
+### Weather Impact:
+- **May 26, 2026**: The weather will be cloudy with a low chance of rain (20%). This should not significantly impact your plans.
+- **May 27, 2026**: Light rain is expected with a 75% chance of precipitation. This could affect your travel to the project review meeting at the Shanghai office, so plan for potential delays and consider using an umbrella.
+- **May 28, 2026**: Moderate rain is forecasted with a 90% chance of rain. This could impact your supplier negotiation in Minhang District, so allow extra travel time and ensure you have rain gear.
+- **May 29, 2026**: The weather will be overcast to cloudy with a 30% chance of rain, which should have minimal impact on your flexible return trip.
+- **May 30, 2026**: The weather will be sunny with a very low chance of rain (5%), which is favorable if you plan to extend your stay.
+
+### Recommendations:
+- **Umbrella**: Given the high probability of rain on May 27 and May 28, it's advisable to carry an umbrella.
+- **Clothing**: Dress in layers and consider a waterproof jacket to stay comfortable in varying temperatures and rain.
+- **Travel Flexibility**: Since your return trip is flexible, you might want to adjust your plans based on the weather or any last-minute business needs.
+
+I hope this helps you prepare for your trip. If you have any more questions or need further assistance, feel free to ask. Safe travels!
+  [Background-LTM] L1 stored 9 conversation messages
+  [Background-LTM] L2 extracted 2 facts, actually stored 0 (after dedup)
+  [KG] Update complete: invalidated 0 relations, added 0 nodes, added 0 relations
+  [Background-KG] Knowledge graph update process complete
+
+======================================================================
+  🔧 Phase 3: Admin triggers hot update (no restart for Agent or Server)
+======================================================================
+  [Demo] Remote upgrade: Weather_Server upgraded: +get_typhoon_warning
+  [Demo] Remote upgrade: Travel_Server upgraded: +search_flight
+
+  [AdminController] >>> Refreshing MCP Server 'Weather_Server'
+  [AdminController] Fetched 2 tools
+  [ToolRegistry] Batch registered/updated 2 tools
+  [AdminController] Upsert 2 tools
+  [AdminController] <<< 'Weather_Server' refresh complete: upsert 2, deleted 0
+
+
+  [AdminController] >>> Refreshing MCP Server 'Travel_Server'
+  [AdminController] Fetched 2 tools
+  [ToolRegistry] Batch registered/updated 2 tools
+  [AdminController] Upsert 2 tools
+  [AdminController] <<< 'Travel_Server' refresh complete: upsert 2, deleted 0
+
+
+======================================================================
+  📍 Phase 4: New capabilities take effect immediately — Flights + Typhoon
+======================================================================
+
+  👤 User: Help me check flights to Shanghai, and also check if there are any typhoons?    
+
+  [Retrieve] LTM semantic search complete (2 relevant facts)
+  [Retrieve] KG semantic search complete (2 entities, 1 relations, 1-hop expansion)
+  [QueryRewriter] Original: Help me check flights to Shanghai, and also check if there are any typhoons?
+  [QueryRewriter] Rewritten: Check flights to Shanghai for my business trip next week, and verify if there are any typhoons expected during my stay.
+  [ToolRetriever] Retrieved Top-3 tools: get_weather, search_flight, get_typhoon_warning
+  [Router] Dynamically bound 3 tools: get_weather, search_flight, get_typhoon_warning
+  [Router] Decision: calling tools search_flight, get_typhoon_warning
+  [MCPExecutor] Executing 2 tool calls concurrently...
+  [MCPExecutor] get_typhoon_warning@Weather_Server call complete
+  [MCPExecutor] search_flight@Travel_Server call complete
+  [Router] Dynamically bound 3 tools: get_weather, search_flight, get_typhoon_warning
+  [Router] Decision: no tool calls needed
+
+  🤖 Assistant: Here is the information regarding your upcoming trip to Shanghai:
+
+### Flight Options to Shanghai:
+1. **Flight MU5101**
+   - **Departure Time**: 07:00
+   - **Arrival Time**: 09:15
+   - **Price**: 680
+   - **Airline**: China Eastern Airlines
+
+2. **Flight CA1501**
+   - **Departure Time**: 10:30
+   - **Arrival Time**: 12:45
+   - **Price**: 820
+   - **Airline**: Air China
+
+3. **Flight FM9101**
+   - **Departure Time**: 14:00
+   - **Arrival Time**: 16:10
+   - **Price**: 590
+   - **Airline**: Shanghai Airlines
+
+4. **Flight CZ3501**
+   - **Departure Time**: 18:30
+   - **Arrival Time**: 20:40
+   - **Price**: 720
+   - **Airline**: China Southern Airlines
+
+### Typhoon Warning for Shanghai:
+- **Typhoon Name**: Typhoon 'Haitang'
+- **Current Position**: East China Sea
+- **Expected Landing**: Expected to make landfall along the Zhejiang coast on May 21
+- **Impact Level**: Yellow warning
+- **Affected Areas**: Shanghai, Zhejiang, Southern Jiangsu
+- **Advisory**: Please closely monitor the latest warning information from meteorological departments and prepare for the typhoon.
+
+### Recommendations:
+- **Flight Selection**: Consider your schedule and choose a flight that best fits your timing and budget. Flight FM9101 offers the lowest price.
+- **Typhoon Preparedness**: Since Typhoon 'Haitang' is expected to affect Shanghai, keep an eye on weather updates and be prepared for potential disruptions. It might be wise to have flexible travel plans.
+
+If you need further assistance or have any more questions, feel free to ask. Safe travels!
+  [Background-LTM] L1 stored 15 conversation messages
+  [Background-LTM] L2 extracted 2 facts, actually stored 0 (after dedup)
+  [KG] Update complete: invalidated 0 relations, added 0 nodes, added 0 relations
+  [Background-KG] Knowledge graph update process complete
+
+----------------------------------------
+  📦 Final storage state
+----------------------------------------
+
+  Long-term memory (2 items):
+    • [0.657] User is going on a business trip to Shanghai next week
+    • [0.508] User plans to stay in Shanghai for about three days
+
+  Knowledge graph (3 entities, 2 relations):
+    [Entity] Shanghai (location)
+    [Entity] business trip (event)
+    [Entity] user (person)
+    [Relation] business trip --[destination]--> Shanghai
+    [Relation] user --[going_on]--> business trip
+
+======================================================================
+  ✅ Four-phase E2E demo complete
+======================================================================
+
+  [Demo] Shutting down Mock MCP Server subprocess...
